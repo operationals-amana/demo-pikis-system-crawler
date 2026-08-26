@@ -171,9 +171,15 @@ PRICE_CACHE_READ = _float("PRICE_CACHE_READ", 0.10)
 PRICE_OUT = _float("PRICE_OUT", 5.00)
 
 # --- crawl schedule --------------------------------------------------------
-# The worker role (docker-entrypoint.sh worker) crawls once a day at this local
-# hour. Railway deployments should prefer the platform cron on the ingest service
-# ('0 18 * * *' UTC = 01:00 WIB) -- the worker loop exists for platforms without
-# a scheduler, and for docker-compose.
+# The daily harvest fires at this local hour. Three things read these knobs and all
+# three mean the same clock time: app/scheduler.py (in the `serve` process, which is
+# what the Railway deployment uses), the `worker` role's loop, and whatever cron a
+# batch `ingest` service is given.
 CRAWL_TIMEZONE = os.getenv("CRAWL_TIMEZONE", "Asia/Jakarta")
 CRAWL_HOUR_LOCAL = _int("CRAWL_HOUR_LOCAL", 1)   # 1 => 01:00 local time
+
+# Turn the in-process schedule OFF when something else already owns the cadence --
+# a platform cron on a separate `ingest` service, or the `worker` role. Leaving both
+# on does not corrupt anything (the runner's advisory lock refuses the second start)
+# but it does mean two processes waking up to race for one slot.
+CRAWL_SCHEDULE_ENABLED = _bool("CRAWL_SCHEDULE_ENABLED", True)

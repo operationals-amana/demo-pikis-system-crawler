@@ -3,15 +3,20 @@
 # this service owns the schema, so `migrate` runs before `serve` rather than being
 # someone else's job.
 #
-#   serve        apply migrations, then run the API (default)
-#   ingest       one INCREMENTAL harvest cycle, then exit -- attach a Railway cron
-#                schedule to this role ('0 18 * * *' = daily at 01:00 WIB)
+#   serve        apply migrations, run the API, AND hold the daily crawl schedule
+#                (01:00 CRAWL_TIMEZONE, in-process) -- the default, and all a
+#                Railway deployment needs; see app/scheduler.py
+#   ingest       one INCREMENTAL harvest cycle, then exit -- the batch alternative,
+#                for a platform cron ('0 18 * * *' = daily at 01:00 WIB). Set
+#                CRAWL_SCHEDULE_ENABLED=false on the API when you use this, or the
+#                two schedules both wake up for the same slot.
 #   ingest-full  one full harvest cycle (first deploy, or corpus rebuild), then exit
 #   classify     (re)run topic classification, then exit
 #   migrate      apply migrations and exit
 #   reindex      rebuild the BM25 artifact and exit
-#   worker       crawl daily at 01:00 Asia/Jakarta in a loop -- ONLY for platforms
-#                without a cron scheduler; on Railway use the cron on `ingest`
+#   worker       crawl daily at 01:00 Asia/Jakarta in a loop, with no HTTP -- for
+#                docker-compose and anything that wants the cadence in its own
+#                process. `serve` already schedules; this is the standalone twin.
 #   <other>      executed verbatim, so `docker run ... sh` still works
 set -e
 role="${1:-serve}"; shift 2>/dev/null || true

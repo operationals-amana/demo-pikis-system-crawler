@@ -1,10 +1,13 @@
 {
   "$schema": "https://railway.app/railway.schema.json",
-  "//": "PIKIS backend API. Attach a Postgres service that ships pgvector and set DATABASE_URL=${{Postgres.DATABASE_URL}}. VERIFY BEFORE FIRST DEPLOY: SELECT * FROM pg_available_extensions WHERE name='vector' -- migration 0001 fails loudly if absent. Deploy in SINGAPORE to match Vercel sin1, or every streamed token makes two trans-Pacific hops. Needs >= 1 GB RAM (torch + e5 + BM25 artifact is ~700MB-1GB RSS); 2 GB recommended. Set JWT_SECRET, ANTHROPIC_API_KEY, CORS_ORIGINS (exact Vercel origins).",
-  "build": { "builder": "DOCKERFILE", "dockerfilePath": "Dockerfile" },
+  "//": "PIKIS backend API. Attach a Postgres service that ships pgvector and set DATABASE_URL=${{Postgres.DATABASE_URL}}. VERIFY BEFORE FIRST DEPLOY: SELECT * FROM pg_available_extensions WHERE name='vector' -- migration 0001 fails loudly if absent. Deploy in SINGAPORE to match Vercel sin1, or every streamed token makes two trans-Pacific hops. Needs >= 1 GB RAM (torch + e5 + BM25 artifact is ~700MB-1GB RSS); 2 GB recommended. Set JWT_SECRET, ANTHROPIC_API_KEY, CORS_ORIGINS (exact Vercel origins). The `serve` role also HOLDS THE DAILY CRAWL SCHEDULE (01:00 CRAWL_TIMEZONE, in-process) -- no cron service is required. If you would rather bill per running minute, deploy railway.ingest.json as a second service on a cron and set CRAWL_SCHEDULE_ENABLED=false here, or the corpus gets harvested twice.",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile"
+  },
   "deploy": {
     "startCommand": "./docker-entrypoint.sh serve",
-    "//": "ALWAYS: this is a server, an exit is a fault. numReplicas 1 -- each replica holds its own in-process BM25 artifact and its own copy of torch; two replicas double memory for throughput this workload does not need.",
+    "//": "ALWAYS: this is a server, an exit is a fault -- and since the crawl schedule lives in this process, a service that stays down also stops harvesting. numReplicas 1 -- each replica holds its own in-process BM25 artifact and its own copy of torch; two replicas double memory for throughput this workload does not need, and each would run its own scheduler (harmless -- the runner's advisory lock refuses the second -- but pointless).",
     "restartPolicyType": "ALWAYS",
     "numReplicas": 1,
     "healthcheckPath": "/health",

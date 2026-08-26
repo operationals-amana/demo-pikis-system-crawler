@@ -1,10 +1,11 @@
 """
-The scheduler-of-last-resort: crawl once a day at 01:00 local time, forever.
+The daily crawl as a standalone process: once a day at 01:00 local time, forever.
 
-Railway deployments should NOT use this -- attach the platform cron to the ingest
-service instead ('0 18 * * *' UTC = 01:00 WIB), where a run is a fresh container
-that exits. This loop exists for docker-compose and any platform without a cron:
-zero extra dependencies, one process, wakes once a day.
+Railway deployments do NOT use this -- the API's `serve` role carries the same
+schedule in-process (app/scheduler.py), so the always-on service that is already
+running is the one that wakes up. This loop is for docker-compose and anything that
+wants the cadence in a process of its own: zero extra dependencies, wakes once a day.
+Set CRAWL_SCHEDULE_ENABLED=false on the API if you run this alongside it.
 
 Each cycle is incremental (scoped to the last successful run) and each crawl is a
 subprocess, so a crashed cycle never takes the loop down with it.

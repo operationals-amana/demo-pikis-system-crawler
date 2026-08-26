@@ -34,18 +34,32 @@ crawler's operational shape:
 
 ### Schedule — daily at 01:00 WIB
 
-- **Railway (recommended):** the `railway.ingest.json` service with a platform Cron
-  Schedule of `0 18 * * *` (18:00 UTC = 01:00 WIB). Each firing runs
-  `docker-entrypoint.sh ingest`: an **incremental** cycle (OAI `from=` + WordPress
-  `modified_after=`, scoped to the last successful run minus a 2-day overlap),
-  re-chunking and re-embedding only what changed, then bumping the BM25 index
-  version, which the running API hot-swaps within `INDEX_POLL_SECONDS`. A no-change
-  day completes in about a minute.
+All three routes below run the same **incremental** cycle (OAI `from=` + WordPress
+`modified_after=`, scoped to the last successful run minus a 2-day overlap),
+re-chunking and re-embedding only what changed, then bumping the BM25 index version,
+which the running API hot-swaps within `INDEX_POLL_SECONDS`. A no-change day
+completes in about a minute. Pick **one** — see `CRAWL_SCHEDULE_ENABLED`.
+
+- **In the API process (default, and what Railway runs):** `docker-entrypoint.sh
+  serve` starts `app/scheduler.py`, a thread that wakes at `CRAWL_HOUR_LOCAL` in
+  `CRAWL_TIMEZONE` and starts a cycle. The API is already always-on, so the schedule
+  costs nothing extra: no second service, no second resident copy of torch. This is
+  the sibling tender-intelligence crawler's arrangement. `/api/admin/stats` reports
+  the next firing as `next_ingest_at`.
+- **Platform cron (bills per running minute):** deploy `railway.ingest.json` as a
+  second service with Cron Schedule `0 18 * * *` (18:00 UTC = 01:00 WIB), running
+  `docker-entrypoint.sh ingest` — one cycle, then exit. Set
+  `CRAWL_SCHEDULE_ENABLED=false` on the API service so the two do not both wake for
+  the same slot.
 - **No cron available:** `docker-entrypoint.sh worker` runs the same cycle in a
-  sleep-until-01:00 loop (`CRAWL_HOUR_LOCAL` / `CRAWL_TIMEZONE`).
+  sleep-until-01:00 loop, with no HTTP.
 - **From the dashboard:** `POST /api/admin/ingest/run` starts a cycle in the
   background and answers 409 with the live run's details while one is going. Stale
   `running` rows left by a killed process are reclaimed automatically.
+
+Whichever fires, it goes through one single-slot gate (`app/ingest_control.py`) over
+a Postgres advisory lock, so a scheduled cycle landing on top of a manual one is
+refused rather than duplicated.
 
 ## Corpus, as actually harvested
 
@@ -96,7 +110,7 @@ python -m scripts.create_admin --email you@example.com --password '...'
 
 python -m scripts.run_ingest --skip-pdf --skip-embed # ~40s, Scrapy crawl + metadata only
 python -m scripts.run_ingest                         # full: PDFs, chunks, embeddings, index
-python -m scripts.run_ingest --incremental           # what the 01:00 cron runs
+python -m scripts.run_ingest --incremental           # what the 01:00 schedule runs
 python -m scripts.run_crawl --source ije             # one spider, crawl only
 python -m scripts.eval_retrieval                     # THE gate; must report >= 0.80
 

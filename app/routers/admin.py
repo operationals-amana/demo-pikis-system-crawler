@@ -7,7 +7,6 @@ browser is eight chances to render half a page.
 """
 
 import json
-import threading
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -16,7 +15,6 @@ from sqlalchemy.orm import Session
 
 from app.deps import get_db, require_admin
 from app.errors import ApiError, bad_request, not_found
-from app.logging_utils import _log
 from app.schemas import ArticlePatch
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -38,7 +36,10 @@ def stats(db: Session = Depends(get_db), admin: dict = Depends(require_admin)) -
         )
     ).mappings().first()
 
+    from app import scheduler
     from rag import lexical
+
+    next_ingest = scheduler.next_run_at()
 
     return {
         "total_articles": one(f"SELECT count(*) {base}"),
@@ -74,6 +75,11 @@ def stats(db: Session = Depends(get_db), admin: dict = Depends(require_admin)) -
         "duplicates": one("SELECT count(*) FROM articles WHERE processing_status = 'duplicate'"),
         "index_version": lexical.index_version(),
         "last_ingest": dict(last_run) if last_run else None,
+        # When the daily schedule fires next, ISO-8601 with offset, or null when
+        # this process is not the one holding the schedule (CRAWL_SCHEDULE_ENABLED
+        # off, cadence owned by a platform cron). Read from the scheduler, not
+        # computed from last_ingest: a manual run does not move the schedule.
+        "next_ingest_at": next_ingest.isoformat() if next_ingest else None,
         "sessions": one("SELECT count(*) FROM chat_sessions WHERE deleted_at IS NULL"),
         "messages": one("SELECT count(*) FROM chat_messages"),
         "feedback": rows("SELECT rating AS key, count(*) AS count FROM message_feedback GROUP BY 1"),
@@ -403,8 +409,8 @@ def archive_article(
 
 
 # --- ingest control --------------------------------------------------------
-
-_ingest_thread: threading.Thread | None = None
+# The single-slot logic lives in app/ingest_control so the daily schedule in
+# app/scheduler shares it: two callers, one slot, one place that decides.
 
 
 @router.get("/ingest/runs")
@@ -437,47 +443,22 @@ def trigger_ingest(
     Kick a harvest cycle. 409 with the running job's details when one is going --
     the useful answer to "ingest now" during an ingest is "one is running, here is
     how long it has been at it", the sibling's exact semantics.
+
+    The 01:00 schedule enters through the same door, so pressing this during the
+    nightly run is refused rather than doubled.
     """
-    global _ingest_thread
-
-    from app.config import INGEST_STALE_MINUTES
-
-    # Only a row younger than the stale window counts as live -- a process that died
-    # mid-run leaves 'running' behind forever, and without this cutoff one crashed
-    # run would 409 every trigger for hours. The runner itself sweeps corpses once it
-    # holds the advisory lock, so the table self-heals on the next successful start.
-    running = db.execute(
-        sql(
-            "SELECT id::text, started_at FROM ingest_runs WHERE status = 'running' "
-            "AND started_at > now() - make_interval(mins => :stale) "
-            "ORDER BY started_at DESC LIMIT 1"
-        ),
-        {"stale": INGEST_STALE_MINUTES},
-    ).mappings().first()
-    if running or (_ingest_thread and _ingest_thread.is_alive()):
-        detail = "An ingest run is already in progress"
-        if running:
-            detail += f" (run {running['id']}, started {running['started_at']})"
-        raise ApiError(409, detail)
+    from app import ingest_control
 
     incremental = bool((payload or {}).get("incremental", True))
+    started, blocker = ingest_control.start(
+        f"admin:{admin['email']}", incremental=incremental, db=db
+    )
+    if not started:
+        detail = "An ingest run is already in progress"
+        if blocker:
+            detail += f" (run {blocker['id']}, started {blocker['started_at']})"
+        raise ApiError(409, detail)
 
-    def _work() -> None:
-        try:
-            from ingest.runner import run
-
-            since = None
-            if incremental:
-                from scripts.run_ingest import _last_successful_run_date
-
-                since = _last_successful_run_date()
-            run(since=since, triggered_by=f"admin:{admin['email']}")
-        except Exception as exc:  # noqa: BLE001 -- the run records its own failure;
-                                  # this thread must simply not die loudly.
-            _log(f"admin ingest: {exc}")
-
-    _ingest_thread = threading.Thread(target=_work, daemon=True, name="admin-ingest")
-    _ingest_thread.start()
     return {"detail": "Ingest started", "incremental": incremental}
 
 

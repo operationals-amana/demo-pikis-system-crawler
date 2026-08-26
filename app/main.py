@@ -63,8 +63,17 @@ async def lifespan(app: FastAPI):  # noqa: ANN201
         except Exception as exc:  # noqa: BLE001
             _log(f"api: embedding model failed to preload ({exc})")
 
+    # Last, so a scheduler thread never wakes into a half-built process. Cheap when
+    # it fires on a quiet day -- the harvest is incremental, scoped to the last
+    # successful run -- and it is the only reason the corpus refreshes without
+    # someone pressing a button.
+    from app import scheduler
+
+    scheduler.start()
+
     _log("api: ready")
     yield
+    scheduler.stop()
     _log("api: shutting down")
 
 

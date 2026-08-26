@@ -192,6 +192,10 @@ def run(
 
         _stage(db, run_id, "dedupe", lambda: dedupe.relink(db), stats)
 
+        from ingest.topics import classify_pending
+
+        _stage(db, run_id, "classify_topics", lambda: classify_pending(db), stats)
+
         if not skip_pdf:
             from ingest.pdf_text import extract_pending
 

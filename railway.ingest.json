@@ -1,7 +1,10 @@
 {
   "$schema": "https://railway.app/railway.schema.json",
-  "//": "Second service off the same image and DATABASE_URL. In Railway Settings -> Cron Schedule set '0 18 * * *' (18:00 UTC = 01:00 WIB daily). The role runs ONE INCREMENTAL cycle -- OAI-PMH from= and WordPress modified_after= scoped to the last successful run -- so a quiet day costs ~1 minute, then bumps the BM25 index version and exits; the API picks the new artifact up within INDEX_POLL_SECONDS with no redeploy. Kept separate from the API because an embed run pegs the CPU and would make chat requests time out.",
-  "build": { "builder": "DOCKERFILE", "dockerfilePath": "Dockerfile" },
+  "//": "OPTIONAL batch alternative to the API's in-process schedule, NOT a requirement. By default the `serve` role already crawls daily at 01:00 CRAWL_TIMEZONE, so this file is for deployments that would rather bill per running minute than keep the cadence inside an always-on service. To use it: deploy this repo as a SECOND service with this file as its config path, set Settings -> Cron Schedule to '0 18 * * *' (18:00 UTC = 01:00 WIB), and set CRAWL_SCHEDULE_ENABLED=false on the API service so the two do not both wake up for the same slot. The role runs ONE INCREMENTAL cycle -- OAI-PMH from= and WordPress modified_after= scoped to the last successful run -- so a quiet day costs ~1 minute, then bumps the BM25 index version and exits; the API picks the new artifact up from Postgres within INDEX_POLL_SECONDS with no redeploy.",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile"
+  },
   "deploy": {
     "startCommand": "./docker-entrypoint.sh ingest",
     "//": "NEVER restart: a cron job is supposed to exit; ALWAYS would relaunch it forever.",
