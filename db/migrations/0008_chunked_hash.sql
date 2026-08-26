@@ -1,0 +1,13 @@
+-- What the chunker last saw, per article.
+--
+-- The chunk-pending query originally used `articles.updated_at > max(chunks.updated_at)`
+-- as its change signal. That is wrong in practice: the search_vector trigger bumps
+-- updated_at on EVERY update, including the status-only writes from dedupe and the
+-- embed rollup -- so after each ingest run every article looked "newer" than its
+-- chunks, the chunker deleted and re-created all 4,120 chunks (with embedding=NULL),
+-- and the daily incremental cron would have re-embedded the whole corpus (~16 min of
+-- pegged CPU) on a day with zero upstream changes.
+--
+-- Comparing content_hash against the hash recorded AT CHUNK TIME asks the right
+-- question -- "did the text change?" -- instead of "did any column change?".
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS chunked_content_hash char(64);

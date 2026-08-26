@@ -1,0 +1,11 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "//": "Second service off the same image and DATABASE_URL. In Railway Settings -> Cron Schedule set '0 18 * * *' (18:00 UTC = 01:00 WIB daily). The role runs ONE INCREMENTAL cycle -- OAI-PMH from= and WordPress modified_after= scoped to the last successful run -- so a quiet day costs ~1 minute, then bumps the BM25 index version and exits; the API picks the new artifact up within INDEX_POLL_SECONDS with no redeploy. Kept separate from the API because an embed run pegs the CPU and would make chat requests time out.",
+  "build": { "builder": "DOCKERFILE", "dockerfilePath": "Dockerfile" },
+  "deploy": {
+    "startCommand": "./docker-entrypoint.sh ingest",
+    "//": "NEVER restart: a cron job is supposed to exit; ALWAYS would relaunch it forever.",
+    "restartPolicyType": "NEVER",
+    "numReplicas": 1
+  }
+}

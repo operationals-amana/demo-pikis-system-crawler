@@ -1,0 +1,31 @@
+-- NOT APPLIED AUTOMATICALLY. Read this before you apply it.
+--
+-- There is deliberately no ANN index on chunks.embedding. At ~12-18k chunks and
+-- 384 dimensions that is ~25 MB of vectors: a sequential scan with <=> runs in
+-- 20-40 ms and gives 100% recall, which for a citation-grounded product is the
+-- entire point.
+--
+-- Adding HNSW before the conditions below are met introduces a SILENT correctness
+-- bug, not a speedup:
+--
+--   pgvector < 0.8.0 has no iterative index scan. Every PIKIS query carries filters
+--   (source / date / topic / language). A filtered HNSW query post-filters AFTER
+--   collecting ef_search candidates, so a narrow filter returns FEWER ROWS THAN
+--   REQUESTED, with no error and no warning. The narrower the filter, the worse the
+--   recall -- and the admin filters are exactly where users go narrow.
+--
+--   Local dev is pgvector 0.5.1; Railway ships ~0.8.x. An index would make the two
+--   environments behave differently, which is the worst kind of bug to chase.
+--
+-- Apply ONLY when BOTH hold:
+--   1. chunks exceeds roughly 150,000 rows, AND
+--   2. the DEPLOYED pgvector is >= 0.8.0  (SELECT extversion FROM pg_extension WHERE extname='vector')
+--
+-- Then also set, per session or in postgresql.conf:
+--   SET hnsw.iterative_scan = relaxed_order;
+--
+-- Building this needs maintenance_work_mem well above the default 64 MB or it spills.
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS chunks_embedding_hnsw
+    ON chunks USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);

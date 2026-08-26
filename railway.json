@@ -1,0 +1,13 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "//": "PIKIS backend API. Attach a Postgres service that ships pgvector and set DATABASE_URL=${{Postgres.DATABASE_URL}}. VERIFY BEFORE FIRST DEPLOY: SELECT * FROM pg_available_extensions WHERE name='vector' -- migration 0001 fails loudly if absent. Deploy in SINGAPORE to match Vercel sin1, or every streamed token makes two trans-Pacific hops. Needs >= 1 GB RAM (torch + e5 + BM25 artifact is ~700MB-1GB RSS); 2 GB recommended. Set JWT_SECRET, ANTHROPIC_API_KEY, CORS_ORIGINS (exact Vercel origins).",
+  "build": { "builder": "DOCKERFILE", "dockerfilePath": "Dockerfile" },
+  "deploy": {
+    "startCommand": "./docker-entrypoint.sh serve",
+    "//": "ALWAYS: this is a server, an exit is a fault. numReplicas 1 -- each replica holds its own in-process BM25 artifact and its own copy of torch; two replicas double memory for throughput this workload does not need.",
+    "restartPolicyType": "ALWAYS",
+    "numReplicas": 1,
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 120
+  }
+}
