@@ -82,7 +82,11 @@ def count_tokens(text_body: str) -> int:
         # ~1.4 tokens per whitespace word is the observed multilingual-e5 ratio; it
         # over-estimates slightly, which is the safe direction against a 512 ceiling.
         return int(len(text_body.split()) * 1.4) + 1
-    return len(tk.encode(text_body, add_special_tokens=False))
+    # verbose=False: rag/context.py counts the whole ~12k-token <sources> block with
+    # this tokenizer, and without it the tokenizer logs "sequence length is longer
+    # than ... (N > 512)" on every chat request. The warning is about running the
+    # sequence THROUGH the model, which never happens here -- counting is the job.
+    return len(tk.encode(text_body, add_special_tokens=False, verbose=False))
 
 
 def _ends_in_abbreviation(fragment: str) -> bool:

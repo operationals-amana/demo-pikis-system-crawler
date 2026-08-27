@@ -319,6 +319,37 @@ def _log_query(db: Session, user_id: str, session_id: str, message_id: str | Non
     db.commit()
 
 
+def _log_listing(db: Session, user_id: str, session_id: str, message_id: str | None,
+                 question: str, listing: dict, latency_ms: int) -> None:
+    """query_log row for the deterministic listing path -- mode 'listing', no chunks."""
+    db.execute(
+        sql(
+            "INSERT INTO query_log (user_id, session_id, message_id, endpoint, query, "
+            "filters, mode, result_count, had_evidence, latency_ms) "
+            "VALUES (CAST(:u AS uuid), CAST(:s AS uuid), CAST(:m AS uuid), 'chat', :q, "
+            "CAST(:f AS jsonb), 'listing', :n, :he, :ms)"
+        ),
+        {
+            "u": user_id, "s": session_id, "m": message_id, "q": question,
+            "f": json.dumps(listing.get("filters") or {}),
+            "n": listing.get("shown") or 0, "he": bool(listing.get("total")),
+            "ms": latency_ms,
+        },
+    )
+    db.commit()
+
+
+def _listing_payload(listing: dict) -> dict[str, Any]:
+    """The assistant-message dict shared by the sync and streaming listing paths."""
+    return {
+        "answer": listing["answer"], "citations": listing["citations"],
+        "no_evidence": False, "grounded": True, "model": None,
+        "retrieval": {"mode": "listing", "total": listing["total"],
+                      "shown": listing["shown"], "filters": listing["filters"],
+                      "topic": listing["topic"]},
+    }
+
+
 def _prepare(db: Session, question: str, session_id: str | None, filters_spec, top_k: int):
     """Rewrite -> retrieve -> build citations -> fit the context budget."""
     from app.routers.search import to_filters
@@ -405,6 +436,27 @@ def _chat_sync(payload: ChatRequest, user: dict) -> ChatResponse:
     try:
         session_id = _ensure_session(db, user["id"], payload.session_id, payload.message)
         _persist_user_message(db, session_id, payload.message)
+
+        # LISTING BRANCH -- "list artikel di 2018" is a catalogue ask, not a research
+        # question. No chunk is semantically similar to it, so Gate 1 would refuse;
+        # the database answers it exactly instead, with no LLM call. See rag/listing.py.
+        from app.routers.search import to_filters
+        from rag.listing import detect_listing, run_listing
+
+        intent = detect_listing(payload.message)
+        if intent is not None:
+            listing = run_listing(db, intent, to_filters(payload.filters))
+            latency = int((time.perf_counter() - started) * 1000)
+            message_id = _persist_assistant(
+                db, session_id, {**_listing_payload(listing), "latency_ms": latency}
+            )
+            _log_listing(db, user["id"], session_id, message_id, payload.message,
+                         listing, latency)
+            return ChatResponse(
+                message_id=message_id, session_id=session_id, answer=listing["answer"],
+                citations=listing["citations"], grounded=True, latency_ms=latency,
+            )
+
         prepared = _prepare(db, payload.message, session_id, payload.filters, payload.top_k)
         result = prepared["result"]
 
@@ -476,6 +528,46 @@ async def _chat_stream(
         yield frame("meta", {
             "session_id": session_id, "model": ANTHROPIC_MODEL, "is_new_session": is_new,
         })
+
+        # LISTING BRANCH -- catalogue asks are answered from article metadata with no
+        # LLM call; Gate 1 would otherwise refuse them. See rag/listing.py. The stage
+        # is reported as 'retrieving' because that is the closest state the frontend's
+        # closed ChatPhase union knows.
+        from app.routers.search import to_filters
+        from rag.listing import detect_listing, run_listing
+
+        intent = detect_listing(payload.message)
+        if intent is not None:
+            yield frame("status", {"stage": "retrieving"})
+            listing = await run_in_threadpool(
+                run_listing, db, intent, to_filters(payload.filters)
+            )
+            latency = int((time.perf_counter() - started) * 1000)
+            message_id = await run_in_threadpool(
+                _persist_assistant, db, session_id,
+                {**_listing_payload(listing), "latency_ms": latency},
+            )
+            await run_in_threadpool(
+                _log_listing, db, user["id"], session_id, message_id, payload.message,
+                listing, latency,
+            )
+            # Sources first, so every [n] in the text is resolvable when it paints.
+            yield frame("sources", {"citations": listing["citations"]})
+            yield frame("status", {"stage": "generating", "sources": len(listing["citations"])})
+            yield frame("delta", {"text": listing["answer"]})
+            yield frame("done", {
+                "message_id": message_id, "session_id": session_id,
+                "answer": listing["answer"], "key_findings": [],
+                "citations_used": [c["index"] for c in listing["citations"]],
+                "citations": listing["citations"], "grounded": True, "no_evidence": False,
+                "elapsed_ms": latency, "source_count": len(listing["citations"]),
+                "usage": {"input_tokens": None, "output_tokens": None, "cost_usd": None},
+                "finish_reason": "listing",
+            })
+            if is_new:
+                background.add_task(_retitle, session_id, payload.message)
+            return
+
         yield frame("status", {"stage": "rewriting"})
         yield comment()
 
