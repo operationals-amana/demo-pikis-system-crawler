@@ -52,7 +52,7 @@ No headings above ###. No preamble like "Based on the sources".
 
 REWRITE_SYSTEM = """\
 You rewrite a follow-up question into a standalone search query for an Indonesian \
-energy research corpus, and translate it.
+energy research corpus, translate it, and classify its intent.
 
 Return JSON only:
 - standalone_question: the question with every pronoun and ellipsis resolved from the \
@@ -62,7 +62,20 @@ it unchanged.
 English -> Indonesian). The corpus is bilingual and mostly English, so this is what \
 lets an Indonesian question reach an English paper through keyword search.
 - language: "id" or "en", the language of the ORIGINAL question.
-- is_followup: true when the question depended on the conversation to make sense."""
+- is_followup: true when the question depended on the conversation to make sense.
+- intent: "listing" ONLY when the user asks to enumerate or browse the DOCUMENTS \
+themselves - "list artikel di 2018", "artikel apa saja tentang solar?", "tunjukin \
+dong publikasi PYC 2020", however informal the phrasing. Use "research" for \
+everything else, including every question about the CONTENT of documents even when \
+it contains the word "list" ("list the barriers discussed in the 2023 report" is \
+research). When unsure, use "research".
+- year_from, year_to: for listing intent, the publication-year window the question \
+states - both equal for a single year, one null for an open interval ("since 2018"), \
+both null when no year is stated. Always null for research intent.
+- listing_topic: for listing intent, the subject constraint in the question's own \
+words ("solar", "transisi energi"), or "" when the user wants everything. Never \
+include document words (artikel, publikasi, paper) or years. Always "" for research \
+intent."""
 
 REWRITE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -71,8 +84,15 @@ REWRITE_SCHEMA: dict[str, Any] = {
         "query_translated": {"type": "string"},
         "language": {"type": "string", "enum": ["id", "en"]},
         "is_followup": {"type": "boolean"},
+        "intent": {"type": "string", "enum": ["research", "listing"]},
+        "year_from": {"type": ["integer", "null"]},
+        "year_to": {"type": ["integer", "null"]},
+        "listing_topic": {"type": "string"},
     },
-    "required": ["standalone_question", "query_translated", "language", "is_followup"],
+    "required": [
+        "standalone_question", "query_translated", "language", "is_followup",
+        "intent", "year_from", "year_to", "listing_topic",
+    ],
     "additionalProperties": False,
 }
 

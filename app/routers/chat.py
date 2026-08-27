@@ -350,6 +350,48 @@ def _listing_payload(listing: dict) -> dict[str, Any]:
     }
 
 
+def _finish_listing_sync(db: Session, user: dict, session_id: str, question: str,
+                         listing: dict, started: float) -> "ChatResponse":
+    latency = int((time.perf_counter() - started) * 1000)
+    message_id = _persist_assistant(
+        db, session_id, {**_listing_payload(listing), "latency_ms": latency}
+    )
+    _log_listing(db, user["id"], session_id, message_id, question, listing, latency)
+    return ChatResponse(
+        message_id=message_id, session_id=session_id, answer=listing["answer"],
+        citations=listing["citations"], grounded=True, latency_ms=latency,
+    )
+
+
+async def _emit_listing(db: Session, user: dict, session_id: str, question: str,
+                        listing: dict, started: float, background: BackgroundTasks,
+                        is_new: bool) -> AsyncIterator[str]:
+    """The SSE tail of a listing answer, shared by both router tiers."""
+    latency = int((time.perf_counter() - started) * 1000)
+    message_id = await run_in_threadpool(
+        _persist_assistant, db, session_id,
+        {**_listing_payload(listing), "latency_ms": latency},
+    )
+    await run_in_threadpool(
+        _log_listing, db, user["id"], session_id, message_id, question, listing, latency
+    )
+    # Sources first, so every [n] in the text is resolvable when it paints.
+    yield frame("sources", {"citations": listing["citations"]})
+    yield frame("status", {"stage": "generating", "sources": len(listing["citations"])})
+    yield frame("delta", {"text": listing["answer"]})
+    yield frame("done", {
+        "message_id": message_id, "session_id": session_id,
+        "answer": listing["answer"], "key_findings": [],
+        "citations_used": [c["index"] for c in listing["citations"]],
+        "citations": listing["citations"], "grounded": True, "no_evidence": False,
+        "elapsed_ms": latency, "source_count": len(listing["citations"]),
+        "usage": {"input_tokens": None, "output_tokens": None, "cost_usd": None},
+        "finish_reason": "listing",
+    })
+    if is_new:
+        background.add_task(_retitle, session_id, question)
+
+
 def _prepare(db: Session, question: str, session_id: str | None, filters_spec, top_k: int):
     """Rewrite -> retrieve -> build citations -> fit the context budget."""
     from app.routers.search import to_filters
@@ -371,6 +413,30 @@ def _prepare(db: Session, question: str, session_id: str | None, filters_spec, t
             and rewritten.language in TRANSLATE_FROM_LANGUAGES
         ):
             extra.append(rewritten.query_translated)
+
+        # LISTING ROUTER, TIER 2. Tier 1 (the regex in rag/listing.py) already ran on
+        # the raw question and missed, so this phrasing is one the regex does not
+        # know -- informal, misspelled, or a follow-up ("kalau 2019?") that only
+        # becomes a listing once history resolves it. The rewrite call was happening
+        # anyway, so this tier costs zero extra latency; and when the rewrite fails,
+        # `intent` stays "research" and the request degrades to exactly the old
+        # behavior. The asymmetric prompt ("when unsure, use research") plus this
+        # ok-check keeps the dangerous direction -- a research question hijacked into
+        # a catalogue dump -- behind two independent guards.
+        if rewritten.ok and rewritten.intent == "listing":
+            from rag.listing import ListingIntent, run_listing
+
+            listing = run_listing(
+                db,
+                ListingIntent(
+                    year_from=rewritten.year_from,
+                    year_to=rewritten.year_to,
+                    topic_text=rewritten.listing_topic,
+                    language=rewritten.language or "en",
+                ),
+                to_filters(filters_spec),
+            )
+            return {"listing": listing, "rewritten": rewritten_text, "history": history}
 
     filters = to_filters(filters_spec)
     result = retrieve(db, rewritten_text, filters=filters, top_k=top_k, extra_queries=extra or None)
@@ -437,27 +503,24 @@ def _chat_sync(payload: ChatRequest, user: dict) -> ChatResponse:
         session_id = _ensure_session(db, user["id"], payload.session_id, payload.message)
         _persist_user_message(db, session_id, payload.message)
 
-        # LISTING BRANCH -- "list artikel di 2018" is a catalogue ask, not a research
-        # question. No chunk is semantically similar to it, so Gate 1 would refuse;
-        # the database answers it exactly instead, with no LLM call. See rag/listing.py.
+        # LISTING ROUTER, TIER 1 -- "list artikel di 2018" is a catalogue ask, not a
+        # research question. No chunk is semantically similar to it, so Gate 1 would
+        # refuse; the database answers it exactly instead, with no LLM call at all.
+        # Phrasings the regex misses get a second chance inside _prepare, where the
+        # rewrite LLM classifies intent. See rag/listing.py.
         from app.routers.search import to_filters
         from rag.listing import detect_listing, run_listing
 
         intent = detect_listing(payload.message)
         if intent is not None:
             listing = run_listing(db, intent, to_filters(payload.filters))
-            latency = int((time.perf_counter() - started) * 1000)
-            message_id = _persist_assistant(
-                db, session_id, {**_listing_payload(listing), "latency_ms": latency}
-            )
-            _log_listing(db, user["id"], session_id, message_id, payload.message,
-                         listing, latency)
-            return ChatResponse(
-                message_id=message_id, session_id=session_id, answer=listing["answer"],
-                citations=listing["citations"], grounded=True, latency_ms=latency,
-            )
+            return _finish_listing_sync(db, user, session_id, payload.message, listing, started)
 
         prepared = _prepare(db, payload.message, session_id, payload.filters, payload.top_k)
+        if prepared.get("listing"):  # LISTING ROUTER, TIER 2 (LLM) -- see _prepare
+            return _finish_listing_sync(
+                db, user, session_id, payload.message, prepared["listing"], started
+            )
         result = prepared["result"]
 
         # GATE 1 -- the LLM is never called when evidence is thin.
@@ -529,10 +592,10 @@ async def _chat_stream(
             "session_id": session_id, "model": ANTHROPIC_MODEL, "is_new_session": is_new,
         })
 
-        # LISTING BRANCH -- catalogue asks are answered from article metadata with no
-        # LLM call; Gate 1 would otherwise refuse them. See rag/listing.py. The stage
-        # is reported as 'retrieving' because that is the closest state the frontend's
-        # closed ChatPhase union knows.
+        # LISTING ROUTER, TIER 1 -- catalogue asks are answered from article metadata
+        # with no LLM call; Gate 1 would otherwise refuse them. See rag/listing.py.
+        # The stage is reported as 'retrieving' because that is the closest state the
+        # frontend's closed ChatPhase union knows.
         from app.routers.search import to_filters
         from rag.listing import detect_listing, run_listing
 
@@ -542,30 +605,10 @@ async def _chat_stream(
             listing = await run_in_threadpool(
                 run_listing, db, intent, to_filters(payload.filters)
             )
-            latency = int((time.perf_counter() - started) * 1000)
-            message_id = await run_in_threadpool(
-                _persist_assistant, db, session_id,
-                {**_listing_payload(listing), "latency_ms": latency},
-            )
-            await run_in_threadpool(
-                _log_listing, db, user["id"], session_id, message_id, payload.message,
-                listing, latency,
-            )
-            # Sources first, so every [n] in the text is resolvable when it paints.
-            yield frame("sources", {"citations": listing["citations"]})
-            yield frame("status", {"stage": "generating", "sources": len(listing["citations"])})
-            yield frame("delta", {"text": listing["answer"]})
-            yield frame("done", {
-                "message_id": message_id, "session_id": session_id,
-                "answer": listing["answer"], "key_findings": [],
-                "citations_used": [c["index"] for c in listing["citations"]],
-                "citations": listing["citations"], "grounded": True, "no_evidence": False,
-                "elapsed_ms": latency, "source_count": len(listing["citations"]),
-                "usage": {"input_tokens": None, "output_tokens": None, "cost_usd": None},
-                "finish_reason": "listing",
-            })
-            if is_new:
-                background.add_task(_retitle, session_id, payload.message)
+            async for event in _emit_listing(
+                db, user, session_id, payload.message, listing, started, background, is_new
+            ):
+                yield event
             return
 
         yield frame("status", {"stage": "rewriting"})
@@ -574,6 +617,14 @@ async def _chat_stream(
         prepared = await run_in_threadpool(
             _prepare, db, payload.message, session_id, payload.filters, payload.top_k
         )
+        if prepared.get("listing"):  # LISTING ROUTER, TIER 2 (LLM) -- see _prepare
+            yield frame("status", {"stage": "retrieving"})
+            async for event in _emit_listing(
+                db, user, session_id, payload.message, prepared["listing"], started,
+                background, is_new,
+            ):
+                yield event
+            return
         result = prepared["result"]
         yield frame("status", {"stage": "retrieving", "candidates": result.counts.get("fused", 0)})
 

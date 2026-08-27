@@ -85,7 +85,23 @@ class Rewrite:
     query_translated: str = ""
     language: str = "en"
     is_followup: bool = False
+    # Intent tier 2 of the hybrid listing router (rag/listing.py has tier 1, the
+    # regex). "listing" routes to the catalogue path; anything else is research.
+    intent: str = "research"
+    year_from: int | None = None
+    year_to: int | None = None
+    listing_topic: str = ""
     ok: bool = True
+
+
+def _safe_year(value: Any) -> int | None:
+    """The schema says integer-or-null, but a routing decision this consequential
+    does not get to trust a model output blindly."""
+    try:
+        year = int(value)
+    except (TypeError, ValueError):
+        return None
+    return year if 1980 <= year <= 2049 else None
 
 
 def rewrite_query(question: str, history: list[dict[str, Any]] | None = None) -> Rewrite:
@@ -129,6 +145,10 @@ def rewrite_query(question: str, history: list[dict[str, Any]] | None = None) ->
             query_translated=payload.get("query_translated") or "",
             language=payload.get("language") or "en",
             is_followup=bool(payload.get("is_followup")),
+            intent="listing" if payload.get("intent") == "listing" else "research",
+            year_from=_safe_year(payload.get("year_from")),
+            year_to=_safe_year(payload.get("year_to")),
+            listing_topic=(payload.get("listing_topic") or "").strip(),
         )
     except Exception as exc:  # noqa: BLE001 -- degrade, never block the answer
         _log(f"rewrite: failed ({exc}); using the question as-is")
