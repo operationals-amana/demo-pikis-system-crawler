@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import errors
 from app.config import CORS_ORIGINS, EMBEDDING_LAZY
 from app.logging_utils import _log, configure_logging
-from app.routers import admin, articles, auth, chat, health, search
+from app.routers import admin, articles, auth, chat, health, media, search
 
 
 @asynccontextmanager
@@ -104,4 +104,5 @@ app.include_router(auth.router)
 app.include_router(search.router)
 app.include_router(chat.router)
 app.include_router(articles.router)
+app.include_router(media.router)
 app.include_router(admin.router)

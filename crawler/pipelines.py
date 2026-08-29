@@ -33,6 +33,65 @@ class ValidationPipeline:
         return item
 
 
+class MediaPostgresPipeline:
+    """
+    Batched upserts into media_articles for the news spider.
+
+    Also the attribution point: Google News items arrive with a source name +
+    homepage instead of an outlet_id, and this pipeline owns the DB session, so
+    the domain -> outlet resolution (with its per-crawl cache) happens here
+    rather than in the spider.
+    """
+
+    def open_spider(self, spider: Spider) -> None:
+        self.db = SessionLocal()
+        self.batch: list[dict[str, Any]] = []
+        self.outlet_cache: dict[str, int] = {}
+        self.stats = {"inserted": 0, "updated": 0, "skipped": 0, "failed": 0}
+
+    def process_item(self, item: dict[str, Any], spider: Spider) -> dict[str, Any]:
+        if not item.get("outlet_id"):
+            from ingest.media_store import resolve_outlet
+
+            try:
+                item["outlet_id"] = resolve_outlet(
+                    self.db,
+                    item.get("source_name") or "",
+                    item.get("source_url") or "",
+                    issue_id=item.get("issue_id"),
+                    cache=self.outlet_cache,
+                )
+            except Exception as exc:  # noqa: BLE001 -- one unresolvable source
+                                      # must not stop the crawl
+                self.db.rollback()
+                raise DropItem(f"outlet resolution failed: {exc}") from exc
+        self.batch.append(item)
+        if len(self.batch) >= BATCH_SIZE:
+            self._flush(spider)
+        return item
+
+    def _flush(self, spider: Spider) -> None:
+        if not self.batch:
+            return
+        from ingest.media_store import upsert_media_articles
+
+        result = upsert_media_articles(
+            self.db, self.batch, run_id=getattr(spider, "run_id", None)
+        )
+        for key in self.stats:
+            self.stats[key] += result.get(key, 0)
+        self.batch = []
+
+    def close_spider(self, spider: Spider) -> None:
+        try:
+            self._flush(spider)
+            _log(f"{spider.name}: media upserts {self.stats}")
+            for key, value in self.stats.items():
+                spider.crawler.stats.set_value(f"pikis/{key}", value)
+        finally:
+            self.db.close()
+
+
 class PostgresPipeline:
     """Batched upserts, flushed every BATCH_SIZE items and at spider close."""
 

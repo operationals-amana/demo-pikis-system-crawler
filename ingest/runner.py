@@ -126,7 +126,7 @@ def _run_crawl_subprocess(
 
     repo_root = Path(__file__).resolve().parent.parent
     command = [_sys.executable, "-m", "scripts.run_crawl", "--run-id", run_id]
-    if sources != {"ije", "pyc-wp"}:
+    if sources != {"ije", "pyc-wp", "news"}:
         command += ["--source", next(iter(sources))]
     if since:
         command += ["--since", since]
@@ -169,7 +169,7 @@ def run(
     skip_embed: bool = False,
     limit: int | None = None,  # kept for CLI compatibility; the spiders crawl fully
 ) -> dict[str, Any]:
-    wanted = set(sources or ["ije", "pyc-wp"])
+    wanted = set(sources or ["ije", "pyc-wp", "news"])
     stats: dict[str, Any] = {}
     db = SessionLocal()
 
@@ -189,6 +189,14 @@ def run(
             lambda: _run_crawl_subprocess(run_id, wanted, since),
             stats,
         )
+
+        # Media stages run right after the crawl, before the RAG-heavy ones: a
+        # failure in pdf/chunk/embed must not cost the morning's media dashboard.
+        from ingest.media_alerts import detect as detect_media_alerts
+        from ingest.media_analysis import analyze_pending
+
+        _stage(db, run_id, "media_analyze", lambda: analyze_pending(db), stats)
+        _stage(db, run_id, "media_alerts", lambda: detect_media_alerts(db), stats)
 
         _stage(db, run_id, "dedupe", lambda: dedupe.relink(db), stats)
 

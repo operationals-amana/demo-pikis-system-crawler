@@ -170,6 +170,22 @@ PRICE_CACHE_WRITE = _float("PRICE_CACHE_WRITE", 1.25)
 PRICE_CACHE_READ = _float("PRICE_CACHE_READ", 0.10)
 PRICE_OUT = _float("PRICE_OUT", 5.00)
 
+# --- media intelligence ----------------------------------------------------
+# Google News search per tracked-issue keyword is what gives the dashboard weeks
+# of cross-outlet history on day one; outlet RSS alone only reaches back a day or
+# two. Off switch kept because news.google.com is the one host here we cannot
+# politely retry into forever.
+MEDIA_GOOGLE_NEWS_ENABLED = _bool("MEDIA_GOOGLE_NEWS_ENABLED", True)
+MEDIA_GOOGLE_NEWS_WINDOW_DAYS = _int("MEDIA_GOOGLE_NEWS_WINDOW_DAYS", 30)
+MEDIA_MAX_KEYWORDS_PER_ISSUE = _int("MEDIA_MAX_KEYWORDS_PER_ISSUE", 15)
+# An article at or above this model-reported relevance counts as coverage.
+# 0.5 not higher: the evidence feed shows the score, so borderline items are
+# visible to the analyst rather than silently dropped.
+MEDIA_RELEVANCE_THRESHOLD = _float("MEDIA_RELEVANCE_THRESHOLD", 0.5)
+# Only articles published within this window are ever analysed; matches the
+# longest dashboard period (90 days).
+MEDIA_LOOKBACK_DAYS = _int("MEDIA_LOOKBACK_DAYS", 90)
+
 # --- crawl schedule --------------------------------------------------------
 # The daily harvest fires at this local hour. Three things read these knobs and all
 # three mean the same clock time: app/scheduler.py (in the `serve` process, which is

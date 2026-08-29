@@ -141,6 +141,34 @@ POST   /api/chat/{message_id}/feedback
 moment it appears. Citation indices restart at 1 **per message** — scope lookups by
 `message_id`.
 
+## Media Intelligence
+
+News monitoring of energy issues (currently: Energy Subsidy Reform), separate from
+the RAG corpus — see the docstring in `db/migrations/0009_media.sql` for why the
+two never mix. The pieces:
+
+- **`news` spider** (`crawler/spiders/news_spider.py`) — polls the curated outlets'
+  RSS feeds (`media_outlets` rows) *and* runs a Google News search per tracked-issue
+  keyword. Google hits are attributed to real outlets by domain
+  (`ingest/media_store.resolve_outlet`); unknown domains become `discovered = true`
+  rows. Runs in the same nightly cycle as the other spiders.
+- **Analysis** (`ingest/media_analysis.py`) — keyword prefilter, then batched Haiku
+  calls scoring relevance 0–1, assigning a narrative (enum built from live
+  `media_narratives` rows; the model may propose new ones, capped at 12), and
+  extracting canonical actor names.
+- **Early warnings** (`ingest/media_alerts.py`) — deterministic sliding-window rules
+  (volume spike, new narrative, new actor, regional spread) with condition-named
+  dedup keys, so re-detection never re-fires and analyst dismissals stick.
+- **API** (`app/routers/media.py`):
+
+```
+GET    /api/media/issues             GET  /api/media/outlets
+PATCH  /api/media/issues/{id}        # keywords, default period, monitored outlets
+GET    /api/media/issues/{id}/dashboard?period=7|30|90
+GET    /api/media/issues/{id}/articles?media_type&region&narrative&q&date_from&date_to&page
+POST   /api/media/alerts/{id}/resolve   # {"action": "confirm"|"dismiss"}
+```
+
 ## Known limits, stated plainly
 
 - **The 1,000-article criterion is met by count, not uniformly by substance.** Roughly

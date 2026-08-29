@@ -192,3 +192,19 @@ class ArticlePatch(BaseModel):
     authors: list[str] | None = None
     keywords: list[str] | None = None
     topic: str | None = Field(default=None, max_length=60)
+
+
+# --- media intelligence -----------------------------------------------------
+
+class MediaIssueUpdate(BaseModel):
+    """Configure a tracked issue: keywords, default period, monitored outlets."""
+
+    name: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    keywords: list[str] | None = Field(default=None, max_length=50)
+    default_period_days: Literal[7, 30, 90] | None = None
+    outlet_ids: list[int] | None = Field(default=None, max_length=500)
+
+
+class AlertResolve(BaseModel):
+    action: Literal["confirm", "dismiss"]

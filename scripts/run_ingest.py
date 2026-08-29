@@ -41,7 +41,7 @@ def _last_successful_run_date() -> str | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Harvest and index the PIKIS corpus")
-    parser.add_argument("--source", default="all", choices=["all", "ije", "pyc-wp"])
+    parser.add_argument("--source", default="all", choices=["all", "ije", "pyc-wp", "news"])
     parser.add_argument("--since", help="ISO date for an incremental run")
     parser.add_argument(
         "--incremental",

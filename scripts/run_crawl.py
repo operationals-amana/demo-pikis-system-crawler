@@ -24,7 +24,7 @@ from app.logging_utils import _log, configure_logging
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the PIKIS Scrapy spiders once")
-    parser.add_argument("--source", default="all", choices=["all", "ije", "pyc-wp"])
+    parser.add_argument("--source", default="all", choices=["all", "ije", "pyc-wp", "news"])
     parser.add_argument("--since", help="ISO date lower bound for an incremental crawl")
     parser.add_argument("--run-id", help="ingest_runs id, threaded into ingest_errors")
     args = parser.parse_args()
@@ -36,6 +36,7 @@ def main() -> int:
     from scrapy import signals
 
     from crawler.spiders.ije_spider import IjeSpider
+    from crawler.spiders.news_spider import NewsSpider
     from crawler.spiders.pyc_spider import PycSpider
 
     settings = get_project_settings()
@@ -51,7 +52,7 @@ def main() -> int:
     # handler alive until process.start() returns.
     handlers: list = []
 
-    wanted = {"ije": IjeSpider, "pyc-wp": PycSpider}
+    wanted = {"ije": IjeSpider, "pyc-wp": PycSpider, "news": NewsSpider}
     if args.source != "all":
         wanted = {args.source: wanted[args.source]}
 
