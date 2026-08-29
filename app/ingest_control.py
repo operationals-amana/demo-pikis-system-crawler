@@ -65,6 +65,7 @@ def start(
     triggered_by: str,
     *,
     incremental: bool = True,
+    media_only: bool = False,
     db: Session | None = None,
 ) -> tuple[bool, dict[str, Any] | None]:
     """
@@ -96,7 +97,7 @@ def start(
             # bargain for the admin button; the schedule takes the same one.
             _thread = threading.Thread(
                 target=_work,
-                args=(triggered_by, incremental),
+                args=(triggered_by, incremental, media_only),
                 daemon=True,
                 name="ingest",
             )
@@ -107,7 +108,7 @@ def start(
             session.close()
 
 
-def _work(triggered_by: str, incremental: bool) -> None:
+def _work(triggered_by: str, incremental: bool, media_only: bool = False) -> None:
     try:
         from ingest.runner import run
 
@@ -116,6 +117,14 @@ def _work(triggered_by: str, incremental: bool) -> None:
             from scripts.run_ingest import _last_successful_run_date
 
             since = _last_successful_run_date()
+        if media_only:
+            # An issue-definition save only needs the news spider and the media
+            # analysis that follows it -- the RAG-heavy stages (pdf, chunk,
+            # embed) would triple the wait for a dashboard that is sitting
+            # empty until the re-score lands.
+            run(sources=["news"], since=since, triggered_by=triggered_by,
+                skip_pdf=True, skip_embed=True)
+            return
         run(since=since, triggered_by=triggered_by)
     except Exception as exc:  # noqa: BLE001 -- the run records its own failure in
                               # ingest_runs; this thread must simply not die loudly.

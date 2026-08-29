@@ -141,10 +141,25 @@ def update_issue(
             {"i": issue_id, "ids": sorted(int(o) for o in valid)},
         )
     db.commit()
+
+    # A definitional change re-points what the crawler should look for, so kick
+    # a media-only crawl right away instead of making the analyst find the
+    # ingest button in Admin. The single-slot guard means a nightly or manual
+    # run already in progress simply wins -- the save still lands, and the
+    # invalidated articles get re-scored by whichever run analyses next.
+    crawl_started = False
+    if definition_changed:
+        from app import ingest_control
+
+        crawl_started, _ = ingest_control.start(
+            f"issue-update:{user['email']}", incremental=True, media_only=True, db=db
+        )
+
     out = _issue_row(db, issue_id)
     # Lets the UI tell the analyst their evidence is being re-scored rather than
     # leaving them staring at an unexplained empty dashboard until the next crawl.
     out["analysis_invalidated"] = invalidated
+    out["crawl_started"] = crawl_started
     return out
 
 
