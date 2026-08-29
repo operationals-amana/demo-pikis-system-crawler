@@ -113,14 +113,16 @@ def update_issue(
         if not valid:
             raise bad_request("At least one monitored outlet is required")
         db.execute(sql("DELETE FROM tracked_issue_outlets WHERE issue_id = :i"), {"i": issue_id})
-        for outlet_id in sorted(valid):
-            db.execute(
-                sql(
-                    "INSERT INTO tracked_issue_outlets (issue_id, outlet_id) "
-                    "VALUES (:i, :o) ON CONFLICT DO NOTHING"
-                ),
-                {"i": issue_id, "o": int(outlet_id)},
-            )
+        # One set-based statement, not a loop: the database is a network hop away,
+        # and hundreds of single-row inserts at ~170ms RTT each blow straight
+        # through the frontend proxy's timeout.
+        db.execute(
+            sql(
+                "INSERT INTO tracked_issue_outlets (issue_id, outlet_id) "
+                "SELECT :i, unnest(CAST(:ids AS int[])) ON CONFLICT DO NOTHING"
+            ),
+            {"i": issue_id, "ids": sorted(int(o) for o in valid)},
+        )
     db.commit()
     return _issue_row(db, issue_id)
 
