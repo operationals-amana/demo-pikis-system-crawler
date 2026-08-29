@@ -85,23 +85,40 @@ def update_issue(
     db: Session = Depends(get_db),
     user: dict = Depends(current_user),
 ) -> dict[str, Any]:
-    _issue_row(db, issue_id)  # 404 before any write
+    current = _issue_row(db, issue_id)  # 404 before any write
+
+    # Name, description and keywords define what "relevant" MEANS for this issue:
+    # all three are fed to the analysis model. When any of them actually changes,
+    # every stored verdict was judged against a definition that no longer exists,
+    # so the rows are deleted below and the next crawl re-scores the articles
+    # (they become "no analysis row yet" = pending). Outlets and the default
+    # period scope queries only and do not invalidate anything.
+    definition_changed = False
 
     fields, params = [], {"i": issue_id}
     if body.name is not None:
         fields.append("name = :name"); params["name"] = body.name.strip()
+        definition_changed |= params["name"] != current["name"]
     if body.description is not None:
         fields.append("description = :desc"); params["desc"] = body.description.strip()
+        definition_changed |= params["desc"] != (current["description"] or "")
     if body.keywords is not None:
         cleaned = [k.strip() for k in body.keywords if k and k.strip()]
         if not cleaned:
             raise bad_request("At least one keyword is required")
         fields.append("keywords = :kw"); params["kw"] = cleaned[:50]
+        definition_changed |= params["kw"] != current["keywords"]
     if body.default_period_days is not None:
         fields.append("default_period_days = :period")
         params["period"] = body.default_period_days
     if fields:
         db.execute(sql(f"UPDATE tracked_issues SET {', '.join(fields)} WHERE id = :i"), params)
+
+    invalidated = 0
+    if definition_changed:
+        invalidated = db.execute(
+            sql("DELETE FROM media_article_analysis WHERE issue_id = :i"), {"i": issue_id}
+        ).rowcount
 
     if body.outlet_ids is not None:
         valid = set(
@@ -124,7 +141,11 @@ def update_issue(
             {"i": issue_id, "ids": sorted(int(o) for o in valid)},
         )
     db.commit()
-    return _issue_row(db, issue_id)
+    out = _issue_row(db, issue_id)
+    # Lets the UI tell the analyst their evidence is being re-scored rather than
+    # leaving them staring at an unexplained empty dashboard until the next crawl.
+    out["analysis_invalidated"] = invalidated
+    return out
 
 
 # Scoping fragment shared by every dashboard query: relevant analysis rows for

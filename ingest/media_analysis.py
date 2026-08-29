@@ -12,7 +12,7 @@ to the model. Everything else gets a rule row (is_relevant = false) so the pendi
 query -- "no analysis row yet" -- never re-reads it.
 
 Narratives are OPEN-WORLD, unlike topics: the model classifies against the enum of
-existing media_narratives rows but may answer "new" with a proposed English label.
+existing media_narratives rows but may answer "new" with a proposed Indonesian label.
 Proposals are capped per issue (MAX_LLM_NARRATIVES) because an unbounded taxonomy
 converges on one narrative per article, which is no taxonomy at all.
 """
@@ -48,7 +48,8 @@ Indonesian news coverage of one tracked policy issue. For each numbered news ite
 2. narrative: which framing from <narratives> the item advances. Use "none" when
    the item is irrelevant or fits no listed framing. Use "new" ONLY for a framing
    that is clearly recurring and distinct from every listed one -- then give a
-   short English new_narrative_label (3-5 words, title case).
+   short new_narrative_label in INDONESIAN (3-5 words, title case; the analysts
+   reading the dashboard are Indonesian).
 3. actors: institutions and named public figures the item quotes or discusses,
    as canonical short names, e.g. "Kementerian ESDM", "Kementerian Keuangan",
    "Pertamina", "PLN", "DPR RI", "BPH Migas", "Presiden Prabowo". Use the
