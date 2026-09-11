@@ -396,6 +396,7 @@ def _prepare(db: Session, question: str, session_id: str | None, filters_spec, t
     """Rewrite -> retrieve -> build citations -> fit the context budget."""
     from app.routers.search import to_filters
     from rag.generator import rewrite_query
+    from rag.metadata_filters import extract_explicit_filters
     from rag.retriever import retrieve
 
     history = _history(db, session_id)
@@ -434,11 +435,11 @@ def _prepare(db: Session, question: str, session_id: str | None, filters_spec, t
                     topic_text=rewritten.listing_topic,
                     language=rewritten.language or "en",
                 ),
-                to_filters(filters_spec),
+                extract_explicit_filters(db, rewritten_text, to_filters(filters_spec)),
             )
             return {"listing": listing, "rewritten": rewritten_text, "history": history}
 
-    filters = to_filters(filters_spec)
+    filters = extract_explicit_filters(db, rewritten_text, to_filters(filters_spec))
     result = retrieve(db, rewritten_text, filters=filters, top_k=top_k, extra_queries=extra or None)
     citations = build_citations(result.candidates, result.query_terms)
     kept, sources_block, budget_info = fit(citations)
@@ -510,10 +511,12 @@ def _chat_sync(payload: ChatRequest, user: dict) -> ChatResponse:
         # rewrite LLM classifies intent. See rag/listing.py.
         from app.routers.search import to_filters
         from rag.listing import detect_listing, run_listing
+        from rag.metadata_filters import extract_explicit_filters
 
         intent = detect_listing(payload.message)
         if intent is not None:
-            listing = run_listing(db, intent, to_filters(payload.filters))
+            filters = extract_explicit_filters(db, payload.message, to_filters(payload.filters))
+            listing = run_listing(db, intent, filters)
             return _finish_listing_sync(db, user, session_id, payload.message, listing, started)
 
         prepared = _prepare(db, payload.message, session_id, payload.filters, payload.top_k)
@@ -598,12 +601,14 @@ async def _chat_stream(
         # frontend's closed ChatPhase union knows.
         from app.routers.search import to_filters
         from rag.listing import detect_listing, run_listing
+        from rag.metadata_filters import extract_explicit_filters
 
         intent = detect_listing(payload.message)
         if intent is not None:
             yield frame("status", {"stage": "retrieving"})
+            filters = extract_explicit_filters(db, payload.message, to_filters(payload.filters))
             listing = await run_in_threadpool(
-                run_listing, db, intent, to_filters(payload.filters)
+                run_listing, db, intent, filters
             )
             async for event in _emit_listing(
                 db, user, session_id, payload.message, listing, started, background, is_new

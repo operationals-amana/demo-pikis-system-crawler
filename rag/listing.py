@@ -188,6 +188,7 @@ def _merge_filters(intent: ListingIntent, filters: Filters | None) -> Filters:
     f = filters or Filters()
     merged = Filters(
         source_slugs=list(f.source_slugs),
+        authors=list(f.authors),
         doc_types=list(f.doc_types),
         topics=list(f.topics),
         languages=list(f.languages),

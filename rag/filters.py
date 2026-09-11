@@ -22,6 +22,7 @@ from typing import Any
 @dataclass
 class Filters:
     source_slugs: list[str] = field(default_factory=list)
+    authors: list[str] = field(default_factory=list)
     doc_types: list[str] = field(default_factory=list)
     topics: list[str] = field(default_factory=list)      # topic slugs
     languages: list[str] = field(default_factory=list)   # 'id' / 'en'
@@ -30,7 +31,7 @@ class Filters:
 
     def is_empty(self) -> bool:
         return not any(
-            [self.source_slugs, self.doc_types, self.topics, self.languages,
+            [self.source_slugs, self.authors, self.doc_types, self.topics, self.languages,
              self.date_from, self.date_to]
         )
 
@@ -39,6 +40,8 @@ class Filters:
         out: dict[str, Any] = {}
         if self.source_slugs:
             out["sources"] = self.source_slugs
+        if self.authors:
+            out["authors"] = self.authors
         if self.doc_types:
             out["doc_types"] = self.doc_types
         if self.topics:
@@ -71,6 +74,15 @@ def build(filters: Filters | None) -> tuple[str, dict[str, Any]]:
     if filters.source_slugs:
         clauses.append("s.slug = ANY(:f_sources)")
         params["f_sources"] = filters.source_slugs
+    if filters.authors:
+        # An explicitly named author is an identity constraint, not a fuzzy text
+        # boost. Case-folding tolerates ingestion differences while retaining exact
+        # author-name matching.
+        clauses.append(
+            "EXISTS (SELECT 1 FROM unnest(a.authors) AS article_author "
+            "        WHERE lower(article_author) = ANY(:f_authors))"
+        )
+        params["f_authors"] = [author.lower() for author in filters.authors]
     if filters.doc_types:
         clauses.append("a.doc_type = ANY(:f_doc_types)")
         params["f_doc_types"] = filters.doc_types

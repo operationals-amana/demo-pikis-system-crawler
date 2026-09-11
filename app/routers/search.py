@@ -19,6 +19,7 @@ def to_filters(spec: FilterSpec | None) -> Filters | None:
         return None
     return Filters(
         source_slugs=spec.source_slugs,
+        authors=spec.authors,
         doc_types=spec.doc_types,
         topics=spec.topics,
         languages=spec.languages,
@@ -82,6 +83,11 @@ def search(
 
     started = time.perf_counter()
     filters = to_filters(payload.filters)
+    from rag.metadata_filters import extract_explicit_filters
+
+    # Metadata stated in the query is promoted to the same hard constraints as the
+    # filter bar before either retrieval channel is allowed to rank candidates.
+    filters = extract_explicit_filters(db, payload.query, filters)
 
     # Search is not streamed, so the extra ~400 ms of a translation call is hidden by
     # the spinner -- and without it an Indonesian query cannot reach the mostly-English
@@ -151,5 +157,6 @@ def search(
         total=len(hits),
         took_ms=took,
         index_version=result.index_version,
+        filters_applied=filters.describe() if filters else {},
         results=window,
     )

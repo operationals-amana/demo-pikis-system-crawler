@@ -52,7 +52,7 @@ case "$role" in
     # --timeout-keep-alive must exceed CHAT_TIMEOUT_SECONDS (default 90 is fine at
     # 75s keep-alive because SSE heartbeats keep the connection non-idle) so uvicorn
     # never closes a stream the app still intends to write to.
-    exec uvicorn app.main:app --host 127.0.0.1 --port "${PORT:-8000}" \
+    exec uvicorn app.main:app --host 127.0.0.1 --port "${PORT:-8001}" \
          --timeout-keep-alive 75 "$@"
     ;;
   ingest)      python -m scripts.init_db; exec python -m scripts.run_ingest --incremental "$@" ;;

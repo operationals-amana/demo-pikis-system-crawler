@@ -9,7 +9,7 @@ neither side has to translate.
 from datetime import date
 from typing import Any, Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 # --- auth ------------------------------------------------------------------
@@ -46,11 +46,18 @@ class RefreshRequest(BaseModel):
 
 class FilterSpec(BaseModel):
     source_slugs: list[str] = Field(default_factory=list)
+    authors: list[str] = Field(default_factory=list)
     doc_types: list[str] = Field(default_factory=list)
     topics: list[str] = Field(default_factory=list)
     languages: list[str] = Field(default_factory=list)
     date_from: date | None = None
     date_to: date | None = None
+
+    @model_validator(mode="after")
+    def valid_date_range(self):
+        if self.date_from and self.date_to and self.date_from > self.date_to:
+            raise ValueError("date_from must be on or before date_to")
+        return self
 
 
 # --- search ----------------------------------------------------------------
@@ -87,6 +94,7 @@ class SearchResponse(BaseModel):
     total: int
     took_ms: int
     index_version: int
+    filters_applied: dict[str, Any] = Field(default_factory=dict)
     results: list[SearchHit]
 
 
