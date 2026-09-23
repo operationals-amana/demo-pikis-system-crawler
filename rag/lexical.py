@@ -17,6 +17,7 @@ import time
 
 import numpy as np
 from sqlalchemy import text as sql
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.config import INDEX_POLL_SECONDS
@@ -28,26 +29,78 @@ _index: dict | None = None
 _version: int = 0
 _checked_at: float = 0.0
 
+# The artifact is ~4 MB. Pulled as ONE row through Supabase's pooler (Supavisor),
+# the transfer can stall mid-stream: the server finishes instantly and the session
+# sits idle-in-transaction until the pooler kills it ("SSL connection has been
+# closed unexpectedly"), and the keyword channel never loads. Slices of this size
+# each complete (or fail) in one quick round trip and are individually retryable.
+_SLICE_BYTES = 512 * 1024
+
+
+def _fetch_payload(version: int, size: int) -> bytes | None:
+    """Fetch the artifact body in slices on a dedicated short-transaction session."""
+    from db.engine import SessionLocal
+
+    s = SessionLocal()
+    try:
+        parts: list[bytes] = []
+        offset = 1  # substring() over bytea is 1-based
+        while offset <= size:
+            piece = None
+            for attempt in (1, 2, 3):
+                try:
+                    piece = s.execute(
+                        sql(
+                            "SELECT substring(payload FROM :off FOR :n) "
+                            "FROM search_index_artifacts WHERE kind='bm25' AND version = :v"
+                        ),
+                        {"off": offset, "n": _SLICE_BYTES, "v": version},
+                    ).scalar()
+                    s.rollback()  # never hold a transaction between slices
+                    break
+                except OperationalError as exc:
+                    s.rollback()
+                    if attempt == 3:
+                        raise
+                    _log(f"lexical: slice at {offset} failed (attempt {attempt}/3): {exc}; retrying")
+                    time.sleep(attempt)
+            if not piece:
+                _log(f"lexical: artifact v{version} vanished mid-load; will retry on next poll")
+                return None
+            parts.append(bytes(piece))
+            offset += len(piece)
+        payload = b"".join(parts)
+        if len(payload) != size:
+            _log(f"lexical: artifact v{version} size mismatch ({len(payload)} != {size}); will retry")
+            return None
+        return payload
+    finally:
+        s.close()
+
 
 def _load(db: Session) -> None:
     global _index, _version, _checked_at
-    row = db.execute(
+    head = db.execute(
         sql(
-            "SELECT version, payload FROM search_index_artifacts "
+            "SELECT version, octet_length(payload) FROM search_index_artifacts "
             "WHERE kind='bm25' ORDER BY version DESC LIMIT 1"
         )
     ).first()
-    if not row:
+    if not head:
         _log("lexical: no BM25 artifact found; keyword channel disabled")
         _checked_at = time.time()
         return
-    version, payload = row
+    version, size = int(head[0]), int(head[1])
     if version == _version:
+        _checked_at = time.time()
+        return
+    payload = _fetch_payload(version, size)
+    if payload is None:
         _checked_at = time.time()
         return
     with _lock:
         _index = pickle.loads(payload)
-        _version = int(version)
+        _version = version
         _checked_at = time.time()
     _log(f"lexical: loaded BM25 artifact v{_version} ({len(_index['chunk_ids'])} chunks)")
 
