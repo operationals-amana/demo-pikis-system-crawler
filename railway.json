@@ -11,6 +11,7 @@
     "restartPolicyType": "ALWAYS",
     "numReplicas": 1,
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 120
+    "//healthcheck": "300, not 120: startup imports torch and loads the BM25 artifact before /health answers, and a transient DB blip on first boot (init_db retries these now) can eat a minute of the window before the app even starts.",
+    "healthcheckTimeout": 300
   }
 }

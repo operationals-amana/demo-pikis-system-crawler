@@ -9,10 +9,12 @@ Safe and idempotent: run it on every container start (docker-entrypoint.sh does)
 """
 
 import sys
+import time
 from urllib.parse import urlparse
 
 import sqlalchemy
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from app.config import DATABASE_URL
 from app.logging_utils import _log, configure_logging
@@ -53,7 +55,19 @@ def main() -> int:
 
     from db.migrate import run_migrations
 
-    run_migrations()
+    # The Supabase pooler occasionally drops a brand-new connection ("SSL SYSCALL
+    # error: EOF detected"). This script runs on every container start, so crashing
+    # on the first such drop fails the whole deploy over a blip -- retry instead.
+    attempts = 5
+    for attempt in range(1, attempts + 1):
+        try:
+            run_migrations()
+            break
+        except OperationalError as exc:
+            if attempt == attempts:
+                raise
+            _log(f"init_db: transient DB error (attempt {attempt}/{attempts}): {exc}; retrying")
+            time.sleep(2 * attempt)
 
     # Prove the extension actually landed -- a migration that silently no-ops on a
     # platform without pgvector would otherwise only surface at first query.
