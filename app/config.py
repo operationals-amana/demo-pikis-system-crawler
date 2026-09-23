@@ -119,7 +119,14 @@ RERANK_MODE = os.getenv("RERANK_MODE", "lexical")  # lexical | llm
 # The pre-LLM no-evidence gate. This, not the prompt, is what actually guarantees
 # "sistem tidak membuat jawaban substantif ketika evidence tidak ditemukan".
 MIN_EVIDENCE_CHUNKS = _int("MIN_EVIDENCE_CHUNKS", 2)
-MIN_EVIDENCE_SCORE = _float("MIN_EVIDENCE_SCORE", 0.018)
+# 0.015, not 0.018: a chunk found by ONE channel at rank 1 scores 1/(60+1) = 0.0164,
+# so 0.018 silently demanded that both channels agree on it. Cross-lingual questions
+# can never satisfy that -- an Indonesian query reaches the English journal corpus
+# through the semantic channel only (the lexical channel cannot match "tren terbaru"
+# against English text), so even a 0.88-cosine match was refused as no-evidence.
+# 0.015 admits the top ~6 single-channel ranks; relevance is still guarded by the
+# absolute MIN_SEMANTIC_SIMILARITY floor below, and by Gate 2 behind it.
+MIN_EVIDENCE_SCORE = _float("MIN_EVIDENCE_SCORE", 0.015)
 # Gate 1 must key on an ABSOLUTE similarity, not the RRF score.
 #
 # RRF is rank-based: the top chunk scores ~1/(60+1) per channel whether it is a
