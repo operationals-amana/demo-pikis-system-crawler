@@ -19,6 +19,7 @@ from typing import Any, AsyncIterator
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text as sql
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -250,6 +251,23 @@ def _persist_user_message(db: Session, session_id: str, content: str) -> str:
     ).scalar()
     db.commit()
     return str(message_id)
+
+
+def _with_reconnect(fn, db: Session, *args):
+    """
+    Run a persistence helper, retrying once if the connection died under us.
+
+    pool_pre_ping only validates connections at checkout from the pool; the chat
+    handlers hold a checked-out connection across a 1-2 minute LLM generation, and
+    the write afterwards is the first thing to notice Railway killed it. rollback()
+    discards the failed transaction and its invalidated connection, so the retry
+    checks a fresh one out of the pool -- the answer must not be lost to a socket.
+    """
+    try:
+        return fn(db, *args)
+    except OperationalError:
+        db.rollback()
+        return fn(db, *args)
 
 
 def _persist_assistant(
@@ -540,12 +558,15 @@ def _chat_sync(payload: ChatRequest, user: dict) -> ChatResponse:
             return ChatResponse(message_id=message_id, session_id=session_id, answer=text,
                                 no_evidence=True, grounded=True, latency_ms=latency)
 
+        # Generation can take minutes; hand the connection back to the pool now so it
+        # does not sit idle-in-transaction until Railway kills it.
+        db.rollback()
         generated = answer_sync(payload.message, prepared["sources_block"], prepared["history_block"])
         # GATE 3 -- strip invented citation indices.
         checked = validate(generated.get("answer", ""), prepared["citations"])
         latency = int((time.perf_counter() - started) * 1000)
 
-        message_id = _persist_assistant(db, session_id, {
+        message_id = _with_reconnect(_persist_assistant, db, session_id, {
             "answer": checked["answer"], "key_findings": generated.get("key_findings"),
             "citations": strip_content(checked["citations"]), "grounded": checked["grounded"],
             "no_evidence": bool(generated.get("no_evidence")), "model": ANTHROPIC_MODEL,
@@ -555,8 +576,8 @@ def _chat_sync(payload: ChatRequest, user: dict) -> ChatResponse:
             "retrieval": {"counts": result.counts, "timings": result.timings,
                           "invalid_citations": checked["invalid"], "budget": prepared["budget"]},
         })
-        _log_query(db, user["id"], session_id, message_id, payload.message,
-                   prepared["rewritten"], result_filters(prepared), result, True, latency)
+        _with_reconnect(_log_query, db, user["id"], session_id, message_id, payload.message,
+                        prepared["rewritten"], result_filters(prepared), result, True, latency)
 
         return ChatResponse(
             message_id=message_id, session_id=session_id, answer=checked["answer"],
@@ -658,6 +679,10 @@ async def _chat_stream(
             })
             return
 
+        # The stream below can run for minutes; hand the connection back to the pool
+        # now so it does not sit idle-in-transaction until Railway kills it.
+        await run_in_threadpool(db.rollback)
+
         # SOURCES BEFORE THE FIRST TOKEN. The model emits [1] in its second sentence;
         # the evidence panel must already know what [1] is, or every citation pill is
         # dead text for the whole generation.
@@ -687,10 +712,11 @@ async def _chat_stream(
                 # GATE 2 -- the model itself judged the sources insufficient. Reported
                 # as the same event as Gate 1, so the user sees one consistent state.
                 latency = int((time.perf_counter() - started) * 1000)
-                message_id = await run_in_threadpool(_persist_assistant, db, session_id, {
-                    "answer": data, "citations": [], "no_evidence": True, "grounded": True,
-                    "model": ANTHROPIC_MODEL, "latency_ms": latency,
-                })
+                message_id = await run_in_threadpool(
+                    _with_reconnect, _persist_assistant, db, session_id, {
+                        "answer": data, "citations": [], "no_evidence": True, "grounded": True,
+                        "model": ANTHROPIC_MODEL, "latency_ms": latency,
+                    })
                 yield frame("no_evidence", {"detail": data, "filters_applied": result_filters(prepared)})
                 yield frame("done", {"message_id": message_id, "session_id": session_id,
                                      "no_evidence": True, "elapsed_ms": latency, "source_count": 0})
@@ -709,7 +735,7 @@ async def _chat_stream(
         checked = validate(final.get("answer") or answer_text, prepared["citations"])
         latency = int((time.perf_counter() - started) * 1000)
 
-        message_id = await run_in_threadpool(_persist_assistant, db, session_id, {
+        message_id = await run_in_threadpool(_with_reconnect, _persist_assistant, db, session_id, {
             "answer": checked["answer"],
             "key_findings": final.get("key_findings") or findings,
             "citations": strip_content(checked["citations"]), "grounded": checked["grounded"],
@@ -721,7 +747,7 @@ async def _chat_stream(
                           "invalid_citations": checked["invalid"], "budget": prepared["budget"]},
         })
         await run_in_threadpool(
-            _log_query, db, user["id"], session_id, message_id, payload.message,
+            _with_reconnect, _log_query, db, user["id"], session_id, message_id, payload.message,
             prepared["rewritten"], result_filters(prepared), result, True, latency
         )
 

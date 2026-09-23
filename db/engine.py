@@ -21,6 +21,16 @@ engine = create_engine(
     pool_size=DB_POOL_SIZE,
     max_overflow=DB_MAX_OVERFLOW,
     pool_timeout=DB_POOL_TIMEOUT,
+    connect_args={
+        # pre_ping only guards checkout from the pool. The chat handlers hold a
+        # checked-out connection across a 1-2 minute LLM generation, and Railway's
+        # proxy kills connections that look like dead air ("SSL connection has been
+        # closed unexpectedly"). Keepalive probes make the socket look alive.
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 3,
+    },
     future=True,
 )
 
